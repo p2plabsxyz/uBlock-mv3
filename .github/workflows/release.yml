@@ -1,0 +1,61 @@
+name: Build/release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    continue-on-error: false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out Git repository
+        uses: actions/checkout@v4
+
+      # dist/version is the source of truth: make-chromium-meta.py stamps it
+      # into the manifest. A tag that disagrees with it would ship an extension
+      # whose manifest version does not match its release, so fail early.
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+            FILE_VERSION="$(tr -d '[:space:]' < dist/version)"
+            if [ "${VERSION}" != "${FILE_VERSION}" ]; then
+              echo "::error::Tag ${TAG} implies version ${VERSION}, but dist/version is ${FILE_VERSION}. Update dist/version, commit, then re-tag."
+              exit 1
+            fi
+          else
+            VERSION="$(tr -d '[:space:]' < dist/version)"
+            TAG="v${VERSION}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building ${TAG} (version ${VERSION})"
+
+      # Filter lists live in a separate repo and are not vendored here.
+      - name: Pull uAssets
+        run: tools/pull-assets.sh
+
+      - name: Build Chromium extension
+        run: tools/make-chromium.sh ${{ steps.version.outputs.version }}
+
+      - name: Rename artifact
+        run: mv dist/build/uBlock0_${{ steps.version.outputs.version }}.chromium.zip ublock-origin-chromium-${{ steps.version.outputs.tag }}.zip
+
+      - name: Upload Release
+        uses: ncipollo/release-action@v1.14.0
+        with:
+          artifacts: "ublock-origin-chromium-${{ steps.version.outputs.tag }}.zip"
+          tag: ${{ steps.version.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: true
+          allowUpdates: true
